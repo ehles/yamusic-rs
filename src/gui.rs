@@ -49,6 +49,8 @@ struct State {
     track_id: Option<String>,
     toast_timer: Option<Timer>,
     cards: HashMap<String, Vec<Card>>,
+    /// Порядок вставки ключей `cards` для ограничения размера (LRU): Grid берёт отсюда полные карточки.
+    cards_order: Vec<String>,
     search_shown: Option<Arc<Data>>,
     results_key: Option<String>,
     results_shown: Option<Arc<Data>>,
@@ -1457,6 +1459,7 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
             track_id: None,
             toast_timer: None,
             cards: HashMap::new(),
+            cards_order: Vec::new(),
             search_shown: None,
             results_key: None,
             results_shown: None,
@@ -2186,6 +2189,8 @@ impl Ctx {
             st.pins.clear();
             st.history.clear();
             st.forward.clear();
+            st.cards.clear();
+            st.cards_order.clear();
         }
         let ui = self.ui();
         let app = ui.global::<App>();
@@ -2222,8 +2227,21 @@ impl Ctx {
             self.load_cover(&model, i, c.covers.get(1).map(|s| s.as_str()), css * 0.6, |r, img| r.cover2 = img);
             self.load_cover(&model, i, c.covers.get(2).map(|s| s.as_str()), css * 0.6, |r, img| r.cover3 = img);
         }
-        self.st.borrow_mut().cards.insert(block.to_string(), cards.to_vec());
+        self.remember_cards(block.to_string(), cards.to_vec());
         ModelRc::from(model)
+    }
+
+    /// Запомнить карточки блока для кликов и Grid, ограничивая кэш 24 ключами (LRU по вставке):
+    /// иначе каждый посещённый блок навсегда оставляет полную копию карточек.
+    fn remember_cards(&self, key: String, cards: Vec<Card>) {
+        let mut st = self.st.borrow_mut();
+        st.cards_order.retain(|k| k != &key);
+        st.cards_order.push(key.clone());
+        st.cards.insert(key, cards);
+        while st.cards_order.len() > 24 {
+            let old = st.cards_order.remove(0);
+            st.cards.remove(&old);
+        }
     }
 
     fn track_model(self: &Rc<Self>, tracks: &[Track]) -> ModelRc<TrackItem> {
@@ -3324,6 +3342,7 @@ impl Ctx {
         let ui = self.ui();
         let app = ui.global::<App>();
         let mut st = self.st.borrow_mut();
+        let net = st.net.clone();
         match page {
             Page::List => {
                 st.list_shown = None;
@@ -3375,6 +3394,20 @@ impl Ctx {
                 app.set_my_artists(ModelRc::default());
             }
             _ => {}
+        }
+        // Ушли со страницы: не держим её блоки/поиск в кэше сети и клоны треков в состоянии.
+        if let Some(net) = net {
+            match page {
+                Page::Trends | Page::Concerts | Page::Nonmusic => net.release_prefix("lblock:"),
+                Page::Search => net.release_prefix("search:"),
+                _ => {}
+            }
+        }
+        {
+            let mut st = self.st.borrow_mut();
+            st.results.clear();
+            st.chart.clear();
+            st.artist_tracks.clear();
         }
         self.images.trim();
         if self.lite.get() {

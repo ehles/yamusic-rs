@@ -34,6 +34,52 @@ struct Slot {
     data: Option<Result<Arc<Data>, String>>,
     loading: bool,
     at: Instant,
+    /// Приблизительный объём данных в байтах — для весового лимита кэша.
+    weight: usize,
+}
+
+/// Кэш страниц ограничен и по числу слотов, и по суммарному «весу» данных:
+/// большие плейлисты/лайки не должны вытеснять всё остальное и висеть в памяти.
+const STORE_MAX_SLOTS: usize = 80;
+const STORE_WEIGHT_LIMIT: usize = 6_000_000;
+
+/// Оценка объёма данных страницы в байтах (порядок величины, не точный размер).
+fn data_weight(d: &Data) -> usize {
+    const TRACK: usize = 800;
+    const CARD: usize = 350;
+    match d {
+        Data::List(l) => l.tracks.len() * TRACK,
+        Data::Search(s) => s.tracks.len() * TRACK + (s.artists.len() + s.albums.len() + s.playlists.len()) * CARD,
+        Data::Artist(a) => a.popular.len() * TRACK + (a.studio.len() + a.albums.len() + a.playlists.len() + a.compilations.len()) * CARD,
+        Data::SearchLanding(s) => (s.mixes.len() + s.missed.len() + s.new_playlists.len() + s.history.len()) * CARD + s.chart.len() * TRACK,
+        Data::Playlists(p) => p.len() * CARD,
+        Data::Lyrics(l) => (l.synced.len() + l.text.len()) * 100,
+        Data::Collection(c) => {
+            c.likes_preview.len() * TRACK
+                + c.top_artists.len() * CARD
+                + c.playlist_tabs.iter().map(|(_, v)| v.len()).sum::<usize>() * CARD
+                + c.album_tabs.iter().map(|(_, v)| v.len()).sum::<usize>() * CARD
+        }
+        Data::Skeleton(_) => 2000,
+        Data::Block(b) => b.cards.len() * CARD + b.tracks.len() * TRACK + b.tabs.iter().map(|(_, _, c)| c.len()).sum::<usize>() * CARD,
+    }
+}
+
+/// Выселить старейшие незагружающиеся записи, пока кэш не влезет в лимиты.
+fn evict(st: &mut HashMap<String, Slot>) {
+    loop {
+        let total: usize = st.values().map(|s| s.weight).sum();
+        if total <= STORE_WEIGHT_LIMIT && st.len() <= STORE_MAX_SLOTS {
+            break;
+        }
+        let oldest = st.iter().filter(|(_, s)| !s.loading).min_by_key(|(_, s)| s.at).map(|(k, _)| k.clone());
+        match oldest {
+            Some(k) => {
+                st.remove(&k);
+            }
+            None => break,
+        }
+    }
 }
 
 type Store = Arc<Mutex<HashMap<String, Slot>>>;
@@ -173,16 +219,17 @@ impl Net {
             s.at = Instant::now();
             return s.data.clone();
         }
-        st.insert(key.to_string(), Slot { data: None, loading: true, at: Instant::now() });
-        if st.len() > 80 {
-            let oldest = st.iter().filter(|(_, s)| !s.loading).min_by_key(|(_, s)| s.at).map(|(k, _)| k.clone());
-            if let Some(k) = oldest {
-                st.remove(&k);
-            }
-        }
+        st.insert(key.to_string(), Slot { data: None, loading: true, at: Instant::now(), weight: 0 });
+        evict(&mut st);
         drop(st);
         self.load(key);
         None
+    }
+
+    /// Убрать из кэша все ключи с префиксом (ушли со страницы — данные не держим).
+    /// Загрузки в полёте отбросятся при завершении (ключа уже нет).
+    pub fn release_prefix(&self, prefix: &str) {
+        self.store.lock().unwrap().retain(|k, _| !k.starts_with(prefix));
     }
 
     /// Есть ли ключ в кэше (загружен или грузится), без запроса.
@@ -209,12 +256,21 @@ impl Net {
                 log(format!("{key}: {e}"));
             }
             let mut st = store.lock().unwrap();
-            let slot = st.entry(key).or_insert(Slot { data: None, loading: true, at: Instant::now() });
+            // Ключ мог быть удалён (release_prefix при уходе со страницы) — результат не нужен.
+            let Some(slot) = st.get_mut(&key) else {
+                drop(st);
+                notify();
+                return;
+            };
             slot.loading = false;
             match (&slot.data, res) {
                 (Some(Ok(_)), Err(_)) => {}
-                (_, res) => slot.data = Some(res),
+                (_, res) => {
+                    slot.weight = res.as_ref().map(|d| data_weight(d)).unwrap_or(0);
+                    slot.data = Some(res);
+                }
             }
+            evict(&mut st);
             drop(st);
             notify();
         });
@@ -267,5 +323,29 @@ mod tests {
         assert_eq!(tracks_word(3), "3 трека");
         assert_eq!(tracks_word(11), "11 треков");
         assert_eq!(listeners_word(1964082), "1\u{2008}964\u{2008}082 слушателя в месяц");
+    }
+
+    #[test]
+    fn store_evicts_by_weight() {
+        let mut st: HashMap<String, Slot> = HashMap::new();
+        let now = Instant::now();
+        for (i, w) in [(0u64, 3_000_000usize), (1, 3_000_000), (2, 3_000_000)] {
+            st.insert(format!("k{i}"), Slot { data: None, loading: false, at: now + std::time::Duration::from_secs(i), weight: w });
+        }
+        evict(&mut st);
+        let total: usize = st.values().map(|s| s.weight).sum();
+        assert!(total <= STORE_WEIGHT_LIMIT, "суммарный вес {total} превышает лимит");
+        assert!(!st.contains_key("k0"), "старейшая запись должна быть выселена");
+    }
+
+    #[test]
+    fn store_keeps_loading_slots() {
+        let mut st: HashMap<String, Slot> = HashMap::new();
+        let now = Instant::now();
+        st.insert("old".into(), Slot { data: None, loading: true, at: now, weight: 5_000_000 });
+        st.insert("new".into(), Slot { data: None, loading: false, at: now + std::time::Duration::from_secs(1), weight: 5_000_000 });
+        evict(&mut st);
+        assert!(st.contains_key("old"), "загружающуюся запись выселять нельзя");
+        assert!(!st.contains_key("new"));
     }
 }

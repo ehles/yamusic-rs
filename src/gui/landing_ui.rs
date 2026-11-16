@@ -533,7 +533,7 @@ impl Ctx {
             .map(|c| Card { title: c.title, subtitle: c.subtitle, year: c.sub2, likes: c.likes, covers: c.covers, round: c.round, explicit: c.explicit, target: c.target })
             .collect();
         let key = format!("landing-{}", def.id);
-        self.st.borrow_mut().cards.insert(key.clone(), cards);
+        self.remember_cards(key.clone(), cards);
         self.st.borrow_mut().grid_titles.insert(key.clone(), def.title.clone());
         self.navigate(Page::Grid, Some(key), true);
     }
@@ -611,6 +611,7 @@ impl Ctx {
         LS.with(|l| {
             let mut l = l.borrow_mut();
             l.chart_shown = None;
+            l.chart_tracks.clear();
         });
         self.ui().global::<App>().set_chart_rows(ModelRc::default());
     }
