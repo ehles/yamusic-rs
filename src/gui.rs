@@ -3393,6 +3393,11 @@ impl Ctx {
                 app.set_top_artists(ModelRc::default());
                 app.set_my_artists(ModelRc::default());
             }
+            Page::Wave => {
+                st.blob_src = None;
+                drop(st);
+                app.set_blob(Image::default());
+            }
             _ => {}
         }
         // Ушли со страницы: не держим её блоки/поиск в кэше сети и клоны треков в состоянии.
@@ -3755,6 +3760,12 @@ fn register_extra(app: &App) {
                 }
             });
         })
+    });
+    app.on_fullscreen_closed(|| {
+        with_ctx(|c| c.ui().global::<App>().set_cover_big(Image::default()));
+    });
+    app.on_cover_closed(|| {
+        with_ctx(|c| c.ui().global::<App>().set_cover_view(Image::default()));
     });
     app.on_toggle_navbar(|| {
         with_ctx(|c| {

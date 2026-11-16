@@ -245,6 +245,11 @@ export global App {
     in-out property <bool> fullscreen;
     in-out property <int> fs-mode;
     in property <image> cover-big;
+    // Освобождаем большую обложку при закрытии полноэкранного плеера (любым способом).
+    callback fullscreen-closed();
+    changed fullscreen => {
+        if (!fullscreen) { fullscreen-closed(); }
+    }
     in property <string> queue-header;
     in property <string> queue-title;
     in property <[TrackItem]> queue;
@@ -363,6 +368,11 @@ export global App {
     in-out property <bool> cover-open;
     in property <image> cover-view;
     callback open-cover(string);
+    // Освобождаем обложку просмотра при закрытии.
+    callback cover-closed();
+    changed cover-open => {
+        if (!cover-open) { cover-closed(); }
+    }
 
     in property <bool> nav-collapsed;
     callback toggle-navbar();

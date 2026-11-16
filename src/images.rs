@@ -12,8 +12,8 @@ use std::time::Duration;
 
 /// Бюджет кэша и размер, до которого он ужимается после ухода со страницы.
 /// В лёгком режиме вдвое меньше: обложки чаще качаются заново, зато памяти меньше.
-const BUDGET: [usize; 2] = [16 << 20, 8 << 20];
-const TRIMMED: [usize; 2] = [10 << 20, 4 << 20];
+const BUDGET: [usize; 2] = [12 << 20, 8 << 20];
+const TRIMMED: [usize; 2] = [6 << 20, 4 << 20];
 const WORKERS: usize = 4;
 
 /// (адрес, размер, можно отменить при уходе со страницы)
@@ -46,15 +46,17 @@ thread_local! {
 }
 
 fn decode(bytes: &[u8], px: u32) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
-    let mut img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    // Ресайз в родном формате до конверсии в RGBA — без лишней полной RGBA-копии источника.
+    let mut img = image::load_from_memory(bytes).ok()?;
     if img.width() > px || img.height() > px {
         let (w, h) = if img.width() >= img.height() {
             (px, (px as u64 * img.height() as u64 / img.width() as u64).max(1) as u32)
         } else {
             ((px as u64 * img.width() as u64 / img.height() as u64).max(1) as u32, px)
         };
-        img = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
+        img = img.resize_exact(w, h, image::imageops::FilterType::Triangle);
     }
+    let img = img.to_rgba8();
     Some(SharedPixelBuffer::clone_from_slice(img.as_raw(), img.width(), img.height()))
 }
 
