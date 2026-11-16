@@ -105,9 +105,9 @@
 > лог сборки открыт. Можно собрать и самим ([как это сделать](#сборка)).
 
 **Обновление.** Приложение раз в полчаса проверяет релизы на GitHub. Кнопка «Обновить» скачивает
-новый `yamusic-rs.exe`, сверяет его SHA-256 с релизом, заменяет старый файл и перезапускается.
-Если папка закрыта для записи (например, `Program Files`), кнопка откроет страницу релиза,
-и файл можно заменить вручную.
+новый пакет (`yamusic-rs_<версия>_windows_x86_64.zip`), сверяет его SHA-256 с релизом, заменяет
+старый exe и перезапускается. Если папка закрыта для записи (например, `Program Files`), кнопка
+откроет страницу релиза, и файл можно заменить вручную.
 
 **Удаление.**
 1. Выключите в настройках «Запускать вместе с Windows», если включали.
@@ -116,9 +116,32 @@
 
 Скачанные треки лежат в `Музыка\Яндекс Музыка`, их удаляйте по желанию.
 
+### macOS (бета)
+
+1. Скачайте со страницы [последнего релиза](https://github.com/ehles/yamusic-rs/releases/latest)
+   zip под свою архитектуру: `yamusic-rs_<версия>_macos_arm64.zip` для Apple Silicon (M1 и новее)
+   или `yamusic-rs_<версия>_macos_x86_64.zip` для Intel.
+2. Распакуйте и перетащите «Яндекс Музыка RS.app» в «Программы» или любую папку.
+3. Приложение без подписи Apple, поэтому при первом запуске macOS его заблокирует. Нажмите
+   на `.app` правой кнопкой → «Открыть» → «Открыть» (на новых macOS: «Системные настройки» →
+   «Конфиденциальность и безопасность» → «Открыть всё равно»). Из Терминала то же самое делает
+   команда `xattr -d com.apple.quarantine "/Applications/Яндекс Музыка RS.app"`.
+
+Медиаклавиши и «Сейчас играет» в Пункте управления работают, значок лежит в меню-баре; трея
+с закрытием окна, как на Windows, нет — закрытие окна закрывает приложение.
+
+**Обновление.** Приложение раз в полчаса проверяет релизы на GitHub. Кнопка «Обновить» скачивает
+zip своей архитектуры, сверяет SHA-256, подменяет бандл `.app` и перезапускается — переустановка
+вручную не нужна. Если приложение запущено не из `.app` (например, из `cargo run`), кнопка
+откроет страницу релиза.
+
+**Удаление.** Удалите «Яндекс Музыка RS.app». Настройки и вход лежат в
+`~/Library/Application Support/yamusic-rs`, кэш в `~/Library/Caches/yamusic-rs`, токен в Связке
+ключей под именем «Яндекс Музыка RS».
+
 ### Linux (бета)
 
-В релизе три файла, внутри одна и та же программа. Выберите тот, что подходит вашей системе:
+Для Linux в релизе три файла, внутри одна и та же программа. Выберите тот, что подходит вашей системе:
 
 | Система | Файл | Установка |
 | --- | --- | --- |
@@ -149,7 +172,7 @@ AppImage монтирует себя через FUSE. Если пишет `Canno
 | Windows на ARM | Должна запускаться через эмуляцию x64. Не проверялась. |
 | Windows 7 и 8.1 | Не поддерживаются: текущий Rust под них не собирает. |
 | **Linux** x86_64 | Бета. Нужна glibc 2.35 или новее: Ubuntu 22.04+, Debian 12+, Mint 21+, Fedora, openSUSE, Arch и другие. Проверено на Ubuntu 22.04, Debian 13, Fedora 45 и Arch, в Wayland и X11. Звук через PipeWire, PulseAudio или ALSA. Медиаклавиши и плеер в панели GNOME и KDE работают через MPRIS. Трея пока нет, поэтому закрытие окна закрывает приложение. О проблемах пишите в [issues](https://github.com/SpolzerMod/yamusic-rs/issues). |
-| macOS | Пока не планируется. |
+| macOS | Бета, сборки в [релизах форка](https://github.com/ehles/yamusic-rs/releases/latest): macOS 12+, Apple Silicon и Intel, пакеты по архитектурам. Медиаклавиши и «Сейчас играет» через системный плеер, значок в меню-баре, самообновление. |
 
 **Нужно ещё:**
 - аккаунт Яндекса. Без Плюса сервер отдаёт только 30-секундные отрывки;
@@ -320,6 +343,15 @@ sudo pacman -S --needed base-devel alsa-lib fontconfig freetype2 wayland libxkbc
 ([cargo-generate-rpm](https://github.com/cat-in-136/cargo-generate-rpm)) и `tools/appimage.sh`.
 Релизы собираются на Ubuntu 22.04: собранное на более новой системе потребует её версию glibc.
 
+#### macOS
+
+Нужны Xcode Command Line Tools (`xcode-select --install`). Готовый бинарник —
+`target/release/yamusic-rs`; бандл для запуска собирает `tools/make_app.sh` →
+`target/dist/Яндекс Музыка RS.app`. Кросс-сборка под вторую архитектуру — переменной
+окружения: `MACOS_TARGET=aarch64-apple-darwin tools/make_app.sh` (так CI собирает оба
+пакета). Изменив `CFBundleIdentifier` или подпись, помните: самообновление подменяет
+весь бандл `.app`.
+
 #### Если Skia не скачивается
 
 `skia-bindings` при сборке скачивает готовые бинарники Skia. Если не получается (корпоративный
@@ -346,11 +378,12 @@ SKIA_BINARIES_URL=file:///путь/к/skia.tar.gz cargo build --release
 | `src/assets.rs`, `src/i18n.rs` | Шрифты, спрайт иконок и словари переводов из `app.asar` оригинала или с music.yandex.ru. |
 | `src/images.rs`, `src/net.rs` | Фоновая загрузка обложек и данных страниц, кэши с бюджетом памяти. |
 | `src/sys/windows.rs`, `src/tray.rs` | Окна, трей, автозапуск и прочий Win32. |
+| `src/sys/macos.rs`, `src/tray_macos.rs` | То же для macOS: objc, значок в меню-баре, медиаклавиши, сокет одного экземпляра. |
 | `src/sys/linux.rs` | То же для Linux: пути XDG, один экземпляр через сокет, диалоги, автозапуск. |
 | `src/mpris.rs` | Медиаклавиши и плеер в панели Linux (MPRIS по D-Bus). |
 | `src/secret.rs` | Где хранится токен: DPAPI на Windows, связка ключей на Linux. |
 | `src/discord.rs` | Rich Presence через локальный канал Discord, без сторонних библиотек. |
-| `src/update.rs` | Проверка релизов на GitHub и замена exe на лету (на Linux — ссылка на релиз). |
+| `src/update.rs` | Проверка релизов на GitHub, скачивание zip-пакета и подмена на лету: exe на Windows, бандл на macOS (на Linux — ссылка на релиз). |
 | `ui/theme.slint`, `src/palette.rs` | Сгенерированы `tools/gen_theme.py` и `tools/gen_palette.py` из CSS и JS оригинала. Руками не править. |
 
 Приложение не перерисовывали на глаз. Цвета, размеры и отступы
@@ -412,8 +445,11 @@ uses about 65 MB in one process.
   and an AppImage for everything else; a [`PKGBUILD`](packaging/aur/PKGBUILD) is available for Arch.
   Needs glibc 2.35 or newer. Sound goes through PipeWire, PulseAudio or ALSA, media keys and
   the GNOME/KDE player widget work via MPRIS. There is no tray icon yet.
-- **Requirements:** Windows 11 (Windows 10 should work but is not tested regularly) or Linux, a Yandex
-  account, and Yandex Plus for full-length tracks. macOS is not planned.
+- **macOS (beta):** per-architecture zips (`_macos_arm64` for Apple Silicon, `_macos_x86_64`
+  for Intel) in the [fork releases](https://github.com/ehles/yamusic-rs/releases/latest),
+  macOS 12 or newer. The app updates itself from GitHub releases.
+- **Requirements:** Windows 11 (Windows 10 should work but is not tested regularly), Linux or
+  macOS 12+, a Yandex account, and Yandex Plus for full-length tracks.
 - **Privacy:** the token is encrypted with Windows DPAPI or kept in the Linux keyring (Secret Service)
   and only sent over HTTPS to `yandex.ru` / `yandex.net`. Besides Yandex, the app only talks to
   `api.github.com` (update checks) and the local Discord client (optional status). There is no telemetry.

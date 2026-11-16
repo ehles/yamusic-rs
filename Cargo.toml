@@ -63,6 +63,11 @@ block2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSGeometry"] }
 objc2-media-player = { version = "0.3", features = ["MPRemoteCommand"] }
 
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+# Распаковка zip-пакета обновления (самообновление на Windows и macOS). Только чтение:
+# deflate-flate2 без deflate (zopfli — компрессор для записи).
+zip = { version = "9.6.1", default-features = false, features = ["deflate-flate2"] }
+
 [build-dependencies]
 slint-build = "1.18"
 

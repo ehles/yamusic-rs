@@ -1193,8 +1193,8 @@ fn start_updates(ui: &AppWindow) {
     });
     ui.global::<App>().on_update_install(|| {
         let Some(r) = UPDATE.with(|u| u.borrow().clone()) else { return };
-        // В релизе нет exe — обновить можно только руками, ведём на страницу.
-        if r.exe.is_none() {
+        // Для этой системы нет пакета — обновить можно только руками, ведём на страницу.
+        if r.zip.is_none() {
             sys::open_url(&r.page);
             return;
         }

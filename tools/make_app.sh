@@ -1,26 +1,36 @@
 #!/bin/bash
-# Собрать target/dist/Яндекс Музыка RS.app из release-сборки:
-# бинарник + Info.plist + иконка icns (packaging/icons/256.png, ужатый системным
-# sips до размеров iconset). Локальная сборка запускается без нотаризации;
-# ad-hoc подпись нужна, чтобы приложение охотнее запускалось у соседей по сети.
+# Собрать .app из release-сборки: бинарник + Info.plist + иконка icns
+# (packaging/icons, ужатая системным sips до размеров iconset). Локальная сборка
+# запускается без нотаризации; ad-hoc подпись нужна, чтобы приложение охотнее
+# запускалось у соседей по сети.
 #
 # Использование: tools/make_app.sh [версия]   (по умолчанию — из Cargo.toml)
+#   MACOS_TARGET=<triple> — сборка под конкретную архитектуру (кросс-сборка для CI);
+#   бандл кладётся в target/<triple>/dist/, чтобы две архитектуры не конфликтовали.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 APP_NAME="Яндекс Музыка RS"
 EXE="yamusic-rs"
 VERSION="${1:-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)}"
-BUNDLE="target/dist/${APP_NAME}.app"
 
-cargo build --release
+if [ -n "${MACOS_TARGET:-}" ]; then
+  cargo build --release --target "$MACOS_TARGET"
+  BIN="target/$MACOS_TARGET/release/$EXE"
+  DIST="target/$MACOS_TARGET/dist"
+else
+  cargo build --release
+  BIN="target/release/$EXE"
+  DIST="target/dist"
+fi
+BUNDLE="$DIST/${APP_NAME}.app"
 
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
-cp "target/release/${EXE}" "$BUNDLE/Contents/MacOS/${EXE}"
+cp "$BIN" "$BUNDLE/Contents/MacOS/$EXE"
 
 # --- иконка: 256.png → .iconset (размеры правит sips) → icns ---
-ICONSET="target/dist/${EXE}.iconset"
+ICONSET="$DIST/${EXE}.iconset"
 rm -rf "$ICONSET"
 mkdir -p "$ICONSET"
 for name in 16 32 128 256; do

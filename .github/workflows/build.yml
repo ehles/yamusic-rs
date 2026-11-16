@@ -1,12 +1,13 @@
-# Каждый push и PR: clippy, тесты и сборки в артефактах: exe для Windows, .deb, .rpm и
-# AppImage для Linux.
+# Каждый push и PR: clippy, тесты и сборки в артефактах: zip с exe для Windows, .app для
+# macOS (arm64 и x86_64 отдельно), .deb, .rpm и AppImage для Linux.
 # Тег v* (например v1.0.1): то же и релиз со всеми файлами. Его создаёт отдельное задание
-# после обеих сборок. Встроенная обновлялка на Windows ищет в релизе yamusic-rs.exe.
+# после всех сборок. Встроенная обновлялка ищет в релизе zip своей платформы:
+# yamusic-rs_<версия>_<windows|macos>_<x86_64|arm64>.zip.
 name: Сборка
 
 on:
   push:
-    branches: [main]
+    branches: [main, mac]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -36,14 +37,23 @@ jobs:
       - run: cargo test --release
       - run: cargo build --release
 
+      - name: Zip
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"').Matches[0].Groups[1].Value
+          Compress-Archive -Path target/release/yamusic-rs.exe -DestinationPath "yamusic-rs_${v}_windows_x86_64.zip"
+
       - name: SHA-256
         shell: pwsh
-        run: (Get-FileHash target/release/yamusic-rs.exe -Algorithm SHA256).Hash.ToLower()
+        run: |
+          (Get-FileHash target/release/yamusic-rs.exe -Algorithm SHA256).Hash.ToLower()
+          (Get-FileHash yamusic-rs_*_windows_x86_64.zip -Algorithm SHA256).Hash.ToLower()
 
-      # Без zip: из артефактов скачивается сразу yamusic-rs.exe.
+      # Без обёртки: из артефактов скачивается сразу zip.
       - uses: actions/upload-artifact@v7
         with:
-          path: target/release/yamusic-rs.exe
+          name: windows-zip
+          path: yamusic-rs_*_windows_x86_64.zip
           archive: false
 
   # Ubuntu 22.04 — самая старая glibc (2.35) среди поддерживаемых: собранное здесь
@@ -97,9 +107,46 @@ jobs:
           path: ${{ steps.pkg.outputs.rpm }}
           archive: false
 
+  # Intel-раннер: x86_64 собирается нативно, aarch64 — кросс-сборкой тем же Xcode.
+  # Пакеты по архитектуре отдельные (не universal): universal вдвое больше по размеру.
+  macos:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test --release
+
+      - name: .app под обе архитектуры и zip
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          MACOS_TARGET=aarch64-apple-darwin tools/make_app.sh
+          MACOS_TARGET=x86_64-apple-darwin tools/make_app.sh
+          ditto -c -k --keepParent "target/aarch64-apple-darwin/dist/Яндекс Музыка RS.app" "yamusic-rs_${v}_macos_arm64.zip"
+          ditto -c -k --keepParent "target/x86_64-apple-darwin/dist/Яндекс Музыка RS.app" "yamusic-rs_${v}_macos_x86_64.zip"
+
+      - name: SHA-256
+        run: shasum -a 256 yamusic-rs_*_macos_*.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64-zip
+          path: yamusic-rs_*_macos_arm64.zip
+          archive: false
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-x86_64-zip
+          path: yamusic-rs_*_macos_x86_64.zip
+          archive: false
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux]
+    needs: [windows, linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
