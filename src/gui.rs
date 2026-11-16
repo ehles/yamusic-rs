@@ -1888,7 +1888,10 @@ fn install_tray(ui: &AppWindow, player: &Player) {
                 }
                 Event::Show => reveal(&ui),
                 Event::PlayPause => ui.global::<App>().invoke_play_pause(),
+                // Отдельные pause/play есть только у медиаклавиш macOS (tray_macos).
+                #[cfg(target_os = "macos")]
                 Event::Pause => p.send(Cmd::Pause),
+                #[cfg(target_os = "macos")]
                 Event::Resume => p.send(Cmd::Resume),
                 Event::Prev => p.send(Cmd::Prev),
                 Event::Next => p.send(Cmd::Next),

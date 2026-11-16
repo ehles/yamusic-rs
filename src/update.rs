@@ -282,35 +282,40 @@ pub fn relaunch(exe: &Path) -> Result<(), String> {
         .map_err(|e| format!("новая версия не запустилась: {e}"))
 }
 
-/// Убрать файлы прошлой версии, оставшиеся после обновления: `*.old.exe` на Windows,
-/// `*.old.app` на macOS. Старый процесс может ещё завершаться и держать их, поэтому
-/// пробуем несколько раз в фоне.
+/// Файл прошлой версии после обновления: `*.old.exe` на Windows, `*.old.app` на macOS.
+#[cfg(any(windows, target_os = "macos"))]
+fn old_artifact() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    #[cfg(windows)]
+    {
+        Some(exe.with_extension("old.exe"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        app_bundle(&exe).map(|b| b.with_extension("old.app").to_path_buf())
+    }
+}
+
+/// Убрать файлы прошлой версии, оставшиеся после обновления. Старый процесс может ещё
+/// завершаться и держать их, поэтому пробуем несколько раз в фоне.
 pub fn cleanup() {
-    let old: Option<PathBuf> = (|| {
-        let exe = std::env::current_exe().ok()?;
-        #[cfg(windows)]
-        {
-            Some(exe.with_extension("old.exe"))
-        }
-        #[cfg(target_os = "macos")]
-        {
-            app_bundle(&exe).map(|b| b.with_extension("old.app").to_path_buf())
-        }
-        #[cfg(not(any(windows, target_os = "macos")))]
-        {
-            None
-        }
-    })();
-    let Some(old) = old.filter(|p| p.exists()) else { return };
-    std::thread::spawn(move || {
-        for _ in 0..10 {
-            let gone = if old.is_dir() { std::fs::remove_dir_all(&old) } else { std::fs::remove_file(&old) };
-            if gone.is_ok() || !old.exists() {
-                return;
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        return;
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let Some(old) = old_artifact().filter(|p| p.exists()) else { return };
+        std::thread::spawn(move || {
+            for _ in 0..10 {
+                let gone = if old.is_dir() { std::fs::remove_dir_all(&old) } else { std::fs::remove_file(&old) };
+                if gone.is_ok() || !old.exists() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_secs(2));
             }
-            std::thread::sleep(Duration::from_secs(2));
-        }
-    });
+        });
+    }
 }
 
 #[cfg(test)]
