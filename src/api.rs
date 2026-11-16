@@ -15,6 +15,15 @@ pub const WAVE: &str = "user:onyourwave";
 
 pub type Res<T> = Result<T, String>;
 
+/// Забрать `result` из ответа без клона: значение перемещается, на месте остаётся Null.
+/// Если `result` нет — возвращается весь ответ (как в оригинальном `.unwrap_or(v)`).
+fn take_result(mut v: Value) -> Value {
+    match v.as_object_mut().and_then(|o| o.remove("result")) {
+        Some(r) => r,
+        None => v,
+    }
+}
+
 /// Качество звука из настроек: 0 превосходное, 1 оптимальное, 2 экономичное.
 pub static QUALITY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
@@ -843,7 +852,7 @@ impl Api {
     /// Запрос к API, возвращает поле `result`.
     fn send(&self, rb: RequestBuilder) -> Res<Value> {
         let (status, text) = self.send_text(rb)?;
-        let v: Value = serde_json::from_str(&text).map_err(|_| format!("HTTP {status}: {}", short(&text)))?;
+        let mut v: Value = serde_json::from_str(&text).map_err(|_| format!("HTTP {status}: {}", short(&text)))?;
         if !status.is_success() {
             let msg = v
                 .pointer("/error/message")
@@ -855,7 +864,10 @@ impl Api {
             }
             return Err(format!("HTTP {status}: {msg}"));
         }
-        Ok(v.get("result").cloned().unwrap_or(Value::Null))
+        Ok(match v.get_mut("result") {
+            Some(r) => std::mem::take(r),
+            None => Value::Null,
+        })
     }
 
     fn get(&self, path: &str, query: &[(&str, &str)]) -> Res<Value> {
@@ -892,7 +904,7 @@ impl Api {
             return Err(format!("HTTP {status}: {}", short(&text)));
         }
         let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        Ok(v.get("result").cloned().unwrap_or(v))
+        Ok(take_result(v))
     }
 
     /// Трейлер исполнителя, альбома или плейлиста: заголовок и несколько треков.
@@ -1101,7 +1113,7 @@ impl Api {
             return Err(format!("HTTP {status}: {}", short(&text)));
         }
         let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        let v = v.get("result").cloned().unwrap_or(v);
+        let v = take_result(v);
         Ok(v.get("items")
             .and_then(|i| i.as_array())
             .map(|a| {
@@ -1157,7 +1169,7 @@ impl Api {
             return Err(format!("HTTP {status}: {}", short(&text)));
         }
         let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        Ok(v.get("result").cloned().unwrap_or(v))
+        Ok(take_result(v))
     }
 
     /// Треки волны через сессию ротора, как у оригинала: новая сессия по seeds,
@@ -1317,7 +1329,7 @@ impl Api {
     pub fn playlist(&self, uid: &str, kind: &str) -> Res<(Playlist, Vec<Track>)> {
         let v = self.get(&format!("/users/{uid}/playlists/{kind}"), &[])?;
         let pl = parse_playlist(&v).ok_or("нет данных о плейлисте")?;
-        let items = v.get("tracks").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+        let items: &[Value] = v.get("tracks").and_then(|t| t.as_array()).map(|a| a.as_slice()).unwrap_or(&[]);
         let mut tracks: Vec<Track> = items.iter().filter_map(|i| i.get("track").and_then(parse_track)).collect();
         if tracks.is_empty() && !items.is_empty() {
             let ids: Vec<String> = items.iter().filter_map(|i| s(i.get("id"))).collect();

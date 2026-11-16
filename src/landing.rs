@@ -85,24 +85,20 @@ pub struct Banner {
     pub ad: bool,
 }
 
+fn def_one(b: &Value) -> Option<BlockDef> {
+    let d = b.get("data").cloned().unwrap_or(Value::Null);
+    Some(BlockDef {
+        id: str_of(b, "id"),
+        kind: b.get("type")?.as_str()?.to_string(),
+        title: str_of(&d, "title").trim().to_string(),
+        desc: str_of(&d, "description"),
+        uri: d.pointer("/source/uri").and_then(|u| u.as_str()).map(String::from),
+        more: d.get("viewAllAction").is_some(),
+    })
+}
+
 fn defs(v: &Value) -> Vec<BlockDef> {
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|b| {
-                    let d = b.get("data").cloned().unwrap_or(Value::Null);
-                    Some(BlockDef {
-                        id: str_of(b, "id"),
-                        kind: b.get("type")?.as_str()?.to_string(),
-                        title: str_of(&d, "title").trim().to_string(),
-                        desc: str_of(&d, "description"),
-                        uri: d.pointer("/source/uri").and_then(|u| u.as_str()).map(String::from),
-                        more: d.get("viewAllAction").is_some(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    v.as_array().map(|a| a.iter().filter_map(def_one).collect()).unwrap_or_default()
 }
 
 /// Скелет страницы; вкладки с подписями и обложками приходят отдельным запросом.
@@ -110,7 +106,7 @@ pub fn parse_skeleton(v: &Value, tabs: Option<&Value>) -> Skeleton {
     let mut sk = Skeleton::default();
     for b in v.get("blocks").and_then(|b| b.as_array()).into_iter().flatten() {
         if b.get("type").and_then(|t| t.as_str()) != Some("TABS") {
-            sk.head.extend(defs(&Value::Array(vec![b.clone()])));
+            sk.head.extend(def_one(b));
             continue;
         }
         let d = b.get("data").cloned().unwrap_or(Value::Null);
@@ -323,7 +319,7 @@ fn trend(p: &str) -> i32 {
 
 pub fn parse_block(kind: &str, v: &Value) -> LBlock {
     let mut b = LBlock::default();
-    let items = |key: &str| v.get(key).and_then(|i| i.as_array()).cloned().unwrap_or_default();
+    let items = |key: &str| -> &[Value] { v.get(key).and_then(|i| i.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) };
     match kind {
         "LIKES_AND_HISTORY" => {
             if let Some(f) = v.get("favorites") {
@@ -348,11 +344,11 @@ pub fn parse_block(kind: &str, v: &Value) -> LBlock {
         }
         "ALBUM_PROMO" | "SIMPLE_ALBUM_PROMO" => {
             for it in items("albumBanners") {
-                let Some(mut c) = it.get("album").and_then(|a| merged(&it, "album").or(Some(a.clone()))).as_ref().and_then(album_lcard) else { continue };
+                let Some(mut c) = it.get("album").and_then(|a| merged(it, "album").or(Some(a.clone()))).as_ref().and_then(album_lcard) else { continue };
                 // [обложка альбома, фото исполнителя]
                 c.covers = vec![
-                    uri(&it, "/album/cover/uri").or_else(|| uri(&it, "/album/coverUri")).unwrap_or_default(),
-                    uri(&it, "/cover/uri").unwrap_or_default(),
+                    uri(it, "/album/cover/uri").or_else(|| uri(it, "/album/coverUri")).unwrap_or_default(),
+                    uri(it, "/cover/uri").unwrap_or_default(),
                 ];
                 c.bg = hex_color(it.pointer("/album/cover/color")).or_else(|| hex_color(it.pointer("/cover/color")));
                 b.cards.push(c);
@@ -375,7 +371,7 @@ pub fn parse_block(kind: &str, v: &Value) -> LBlock {
         "SETS_BY_WAVES" | "WAVES" => {
             for t in items("waves") {
                 let cards = t.get("items").and_then(|i| i.as_array()).into_iter().flatten().filter_map(vibe_card).collect();
-                b.tabs.push((str_of(&t, "title"), None, cards));
+                b.tabs.push((str_of(t, "title"), None, cards));
             }
         }
         "NEW_RELEASES" | "EDITORIAL_NEW_RELEASES" => b.cards = items("newReleases").iter().filter_map(release_lcard).collect(),
@@ -388,7 +384,7 @@ pub fn parse_block(kind: &str, v: &Value) -> LBlock {
                     .flatten()
                     .filter_map(|it| album_lcard(&merged(it, "album")?))
                     .collect();
-                b.tabs.push((str_of(&t, "title"), uri(&t, "/cover/uri"), cards));
+                b.tabs.push((str_of(t, "title"), uri(t, "/cover/uri"), cards));
             }
         }
         "CONCERTS_PERSONAL" | "CONCERTS_TOP" | "VIEWED_CONCERTS" => {
@@ -416,7 +412,7 @@ pub fn parse_block(kind: &str, v: &Value) -> LBlock {
         }
         "DONATIONS" => {
             for it in items("donations") {
-                let d = it.get("data").unwrap_or(&it);
+                let d = it.get("data").unwrap_or(it);
                 let Some(a) = d.get("artist").and_then(parse_artist) else { continue };
                 b.cards.push(LCard {
                     title: a.name,
@@ -431,17 +427,17 @@ pub fn parse_block(kind: &str, v: &Value) -> LBlock {
         "NEUROMUSIC" => {
             for it in items("items") {
                 b.cards.push(LCard {
-                    title: str_of(&it, "title"),
+                    title: str_of(it, "title"),
                     bg: hex_color(it.pointer("/style/backgroundColor")),
                     fg: hex_color(it.pointer("/style/titleColor")),
-                    target: format!("station:{}", str_of(&it, "stationId")),
+                    target: format!("station:{}", str_of(it, "stationId")),
                     ..Default::default()
                 });
             }
         }
         "CHART_ALBUMS" => {
             for it in items("items") {
-                let d = it.get("data").unwrap_or(&it);
+                let d = it.get("data").unwrap_or(it);
                 let Some(al) = merged(d, "album") else { continue };
                 let Some(mut c) = album_lcard(&al) else { continue };
                 c.pos = d.pointer("/chart/position").and_then(|p| p.as_u64()).unwrap_or(0) as u32;
@@ -454,9 +450,9 @@ pub fn parse_block(kind: &str, v: &Value) -> LBlock {
         "EDITORIAL_PROMOTIONS" => {
             for d in items("promotions") {
                 b.cards.push(LCard {
-                    title: str_of(&d, "title"),
-                    subtitle: str_of(&d, "subtitle"),
-                    covers: uri(&d, "/imageUrl").into_iter().collect(),
+                    title: str_of(d, "title"),
+                    subtitle: str_of(d, "subtitle"),
+                    covers: uri(d, "/imageUrl").into_iter().collect(),
                     target: d.pointer("/action/weblink").and_then(|w| w.as_str()).map(web_target).unwrap_or_default(),
                     ..Default::default()
                 });
