@@ -153,9 +153,20 @@ pub fn pick_image(_owner: &slint::Window, title: &str) -> Option<String> {
 }
 
 pub fn pick_folder(_owner: &slint::Window, title: &str, start: &str) -> Option<String> {
-    let title = title.replace('\\', "\\\\").replace('"', "\\\"");
-    let start = start.replace('\\', "\\\\").replace('"', "\\\"");
-    dialog(format!("POSIX path of (choose folder with prompt \"{title}\" default location POSIX file \"{start}\")")).flatten()
+    dialog(choose_folder_script(title, start)).flatten()
+}
+
+/// AppleScript диалога выбора папки. `default location` подставляется, только если папка
+/// существует: AppleScript коэрсит путь в `alias` и молча падает на несуществующем
+/// (`-1700 Can't make file … into type alias`), из-за чего диалог вообще не открывается.
+fn choose_folder_script(title: &str, start: &str) -> String {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let def = if !start.is_empty() && Path::new(start).exists() {
+        format!(" default location (POSIX file \"{}\")", esc(start))
+    } else {
+        String::new()
+    };
+    format!("POSIX path of (choose folder with prompt \"{}\"{def})", esc(title))
 }
 
 pub fn open_url(url: &str) {
@@ -320,4 +331,31 @@ pub fn on_wake(f: impl Fn() + Send + 'static) {
 pub fn cleanup() {
     crate::tray::remove();
     let _ = std::fs::remove_file(socket_path());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::choose_folder_script;
+
+    /// Несуществующая стартовая папка не должна попадать в `default location`,
+    /// иначе AppleScript падает и диалог выбора папки не открывается.
+    #[test]
+    fn missing_default_location_is_omitted() {
+        let s = choose_folder_script("Папка", "/definitely/not/exists/xyz");
+        assert!(!s.contains("default location"), "диалог упадёт на несуществующем пути: {s}");
+    }
+
+    /// Существующая стартовая папка подставляется.
+    #[test]
+    fn existing_default_location_is_used() {
+        let dir = std::env::temp_dir();
+        let s = choose_folder_script("Папка", dir.to_str().unwrap());
+        assert!(s.contains("default location"), "существующий путь должен подставляться: {s}");
+    }
+
+    /// Пустой путь — тоже без `default location`.
+    #[test]
+    fn empty_start_is_omitted() {
+        assert!(!choose_folder_script("Папка", "").contains("default location"));
+    }
 }
