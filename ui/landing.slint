@@ -349,12 +349,14 @@ component AlbumPromo inherits Rectangle {
 // Плашка релиза 80 px: обложка 64, название, «сингл • 30 октября», «!» и кнопка игры.
 component ReleaseCard inherits Rectangle {
     in property <LCard> card;
+    // Слой кэширования только для видимых карточек: иначе каждый экземпляр в for держит оффскрин-буфер.
+    in property <bool> layer-cached: true;
     callback open;
     callback play;
     height: 80px;
     border-radius: 12px;
     // Градиент и обложка не меняются при прокрутке: рисуются один раз в кэш, дальше копируются.
-    cache-rendering-hint: App.motion;
+    cache-rendering-hint: layer-cached;
     // radial-gradient(circle at 50% -200%) оригинала: на высоте плашки это почти вертикальный переход.
     background: @linear-gradient(180deg, card.bg.mix(card.bg2, 0.6) 0%, card.bg.mix(card.bg2, 0.91) 100%);
     Cover { x: 8px; y: 8px; width: 64px; height: 64px; radius: 6px; source: card.cover; }
@@ -409,6 +411,7 @@ component SimplePromo inherits Rectangle {
             x: strip.shift + i * (root.w + 16px);
             width: root.w;
             card: c;
+            layer-cached: App.motion && (strip.shift + i * (root.w + 16px) + root.w > 0px && strip.shift + i * (root.w + 16px) < root.width);
             open => { App.landing-open(root.index, i); }
             play => { App.landing-play(root.index, i); }
         }
@@ -437,7 +440,7 @@ component NewReleases inherits Rectangle {
                 border-radius: 141px;
                 clip: true;
                 background: c.bg;
-                cache-rendering-hint: App.motion;
+                cache-rendering-hint: App.motion && (strip.shift + i * 356px + 340px > 0px && strip.shift + i * 356px < root.width);
                 Pic { width: parent.width; height: parent.height; source: c.cover2; }
                 Rectangle { background: @linear-gradient(180deg, c.bg.with-alpha(0) 31%, c.bg.with-alpha(0.4) 70%); }
                 Text {
@@ -458,6 +461,7 @@ component NewReleases inherits Rectangle {
                 y: 218px;
                 width: 340px;
                 card: c;
+                layer-cached: App.motion && (strip.shift + i * 356px + 340px > 0px && strip.shift + i * 356px < root.width);
                 open => { App.landing-open(root.index, i); }
                 play => { App.landing-play(root.index, i); }
             }
