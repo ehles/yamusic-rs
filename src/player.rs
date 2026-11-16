@@ -74,6 +74,8 @@ pub struct Shared {
     pub track: Option<Track>,
     pub source: Source,
     pub upcoming: Vec<Track>,
+    /// Версия очереди: upcoming пересобирается только при её изменении (без churn каждые 200 мс).
+    pub queue_ver: u64,
     pub playing: bool,
     pub loading: bool,
     pub position: f32,
@@ -97,7 +99,7 @@ pub enum Cmd {
     LikeTrack(Track),
     Dislike,
     Wave(Source),
-    PlayList { source: Source, tracks: Vec<Track>, start: usize, after: After },
+    PlayList { source: Source, tracks: Arc<Vec<Track>>, start: usize, after: After },
     /// Перейти к треку из очереди (индекс в `upcoming`).
     Jump(usize),
     Repeat(Repeat),
@@ -183,7 +185,7 @@ enum End {
 }
 
 struct ListPlay {
-    all: Vec<Track>,
+    all: Arc<Vec<Track>>,
     after: After,
 }
 
@@ -220,6 +222,7 @@ struct Engine {
     volume: f32,
     repeat: Repeat,
     shuffle: bool,
+    queue_ver: u64,
     prefetch: Option<(String, Vec<u8>)>,
     prefetching: Option<String>,
     errors_in_row: u32,
@@ -268,6 +271,7 @@ impl Engine {
             volume: 0.6,
             repeat: Repeat::Off,
             shuffle: false,
+            queue_ver: 0,
             prefetch: None,
             prefetching: None,
             errors_in_row: 0,
@@ -382,6 +386,7 @@ impl Engine {
         self.flush_feedback();
         self.stale_batches = 0;
         self.queue.clear();
+        self.queue_ver += 1;
         self.prefetch = None;
         self.prefetching = None;
         self.fetching = false;
@@ -415,14 +420,16 @@ impl Engine {
     fn sync(&mut self) {
         let playing = self.loaded && !self.paused && self.sink().map(|s| !s.is_paused()).unwrap_or(false);
         let pos = if self.loaded { self.pos() } else { 0.0 };
-        let upcoming: Vec<Track> = self.queue.iter().take(30).cloned().collect();
         let mut s = self.shared.lock().unwrap();
         s.playing = playing;
         s.position = pos;
         s.volume = self.volume;
         s.repeat = self.repeat;
         s.shuffle = self.shuffle;
-        s.upcoming = upcoming;
+        if s.queue_ver != self.queue_ver {
+            s.queue_ver = self.queue_ver;
+            s.upcoming = self.queue.iter().take(30).cloned().collect();
+        }
     }
 
     // ---------- главный цикл ----------
@@ -628,7 +635,7 @@ impl Engine {
                 }
                 self.clear_queue();
                 let start = start.min(tracks.len() - 1);
-                let mut order: Vec<Track> = tracks.clone();
+                let mut order: Vec<Track> = tracks.iter().cloned().collect();
                 order.rotate_left(start);
                 let first = order.remove(0);
                 if self.shuffle {
@@ -638,6 +645,7 @@ impl Engine {
                 self.queue.extend(order);
                 self.list = Some(ListPlay { all: tracks, after });
                 self.set_source(source);
+                self.queue_ver += 1;
                 self.advance(End::Skip);
             }
             Cmd::Jump(i) => {
@@ -645,6 +653,7 @@ impl Engine {
                     return;
                 }
                 let skipped: Vec<Track> = self.queue.drain(..i).collect();
+                self.queue_ver += 1;
                 if let Some(cur) = self.current.take() {
                     self.history.push(cur);
                 }
@@ -657,6 +666,7 @@ impl Engine {
             Cmd::Enqueue { track, next } => {
                 if next {
                     self.queue.push_front(track);
+                    self.queue_ver += 1;
                     self.prefetch = None;
                     if self.loaded {
                         self.prefetch_next();
@@ -664,6 +674,7 @@ impl Engine {
                 } else {
                     self.queue.push_back(track);
                 }
+                self.queue_ver += 1;
             }
             Cmd::Shuffle(on) => {
                 self.shuffle = on;
@@ -676,6 +687,7 @@ impl Engine {
                         v = l.all[i.min(l.all.len())..].to_vec();
                     }
                     self.queue.extend(v);
+                    self.queue_ver += 1;
                     self.prefetch = None;
                     if self.loaded {
                         self.prefetch_next();
@@ -786,6 +798,7 @@ impl Engine {
         };
         self.stale_batches = 0;
         self.queue.extend(tracks);
+        self.queue_ver += 1;
         if replace {
             self.advance(End::Skip);
         } else if self.current.is_none() {
@@ -826,11 +839,14 @@ impl Engine {
         let Some(l) = self.list.take() else { return };
         match l.after {
             After::Loop => {
-                let mut all = l.all.clone();
                 if self.shuffle {
+                    let mut all = (*l.all).clone();
                     shuffle(&mut all);
+                    self.queue.extend(all);
+                } else {
+                    self.queue.extend(l.all.iter().cloned());
                 }
-                self.queue.extend(all);
+                self.queue_ver += 1;
                 self.list = Some(l);
             }
             After::Wave(src) => {
@@ -846,8 +862,8 @@ impl Engine {
         if self.queue.is_empty() && self.list.is_some() {
             match (&self.list, self.repeat) {
                 (Some(l), Repeat::All) => {
-                    let all = l.all.clone();
-                    self.queue.extend(all);
+                    self.queue.extend(l.all.iter().cloned());
+                    self.queue_ver += 1;
                 }
                 _ => self.list_finished(),
             }
@@ -881,6 +897,7 @@ impl Engine {
         if let Some(p) = self.history.pop() {
             if let Some(c) = self.current.take() {
                 self.queue.push_front(c);
+                self.queue_ver += 1;
             }
             self.stop_audio();
             self.current = Some(p);

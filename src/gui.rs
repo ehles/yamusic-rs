@@ -1610,7 +1610,7 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
             let full = c.st.borrow().net.as_ref().and_then(|n| n.get("likes")).and_then(|r| r.ok());
             let tracks = match full.as_deref() {
                 Some(Data::List(l)) => l.tracks.clone(),
-                _ => col.likes_preview.clone(),
+                _ => Arc::new(col.likes_preview.clone()),
             };
             let start = tracks.iter().position(|x| x.id == t.id).unwrap_or(0);
             c.player.send(Cmd::PlayList {
@@ -2480,7 +2480,7 @@ impl Ctx {
         }
         self.player.send(Cmd::PlayList {
             source: Source::List { kind, id: id.to_string(), title: title.to_string() },
-            tracks,
+            tracks: Arc::new(tracks),
             start,
             after: After::Wave(Source::Wave),
         });
@@ -3043,7 +3043,7 @@ impl Ctx {
         let Some(data) = self.list() else { return };
         let Data::List(l) = &*data else { return };
         if !l.tracks.is_empty() {
-            net.add_to_playlist(&pl, l.tracks.clone(), l.title.clone());
+            net.add_to_playlist(&pl, l.tracks.to_vec(), l.title.clone());
         }
     }
 
@@ -3478,7 +3478,7 @@ impl Ctx {
                         });
                         c.player.send(Cmd::PlayList {
                             source: Source::List { kind: ListKind::Tracks, id: format!("trailer:{path}"), title },
-                            tracks,
+                            tracks: Arc::new(tracks),
                             start: 0,
                             after: After::Wave(Source::Wave),
                         });
@@ -4040,7 +4040,7 @@ fn register_extra(app: &App) {
         with_ctx(|c| {
             let Some(data) = c.list() else { return };
             let Data::List(l) = &*data else { return };
-            c.download_tracks(l.title.clone(), l.tracks.clone());
+            c.download_tracks(l.title.clone(), l.tracks.to_vec());
         })
     });
     app.set_eq_presets(ModelRc::from(Rc::new(VecModel::from(
