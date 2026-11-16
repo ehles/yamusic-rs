@@ -1888,6 +1888,8 @@ fn install_tray(ui: &AppWindow, player: &Player) {
                 }
                 Event::Show => reveal(&ui),
                 Event::PlayPause => ui.global::<App>().invoke_play_pause(),
+                Event::Pause => p.send(Cmd::Pause),
+                Event::Resume => p.send(Cmd::Resume),
                 Event::Prev => p.send(Cmd::Prev),
                 Event::Next => p.send(Cmd::Next),
                 Event::Updates => sys::open_url(concat!(env!("CARGO_PKG_REPOSITORY"), "/releases")),

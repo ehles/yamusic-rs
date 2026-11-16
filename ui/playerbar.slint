@@ -216,7 +216,10 @@ export component PlayerBar inherits Rectangle {
                 root.drag-progress = max(0, min(1, self.mouse-x / root.width));
             }
             if e.button == PointerEventButton.left && e.kind == PointerEventKind.up && root.drag-progress >= 0 {
-                App.seek(root.drag-progress * App.duration);
+                // Цель показываем в тот же кадр: иначе заполнение отскочит
+                // к старой позиции, пока движок не применит перемотку.
+                App.position = root.drag-progress * App.duration;
+                App.seek(App.position);
                 root.drag-progress = -1;
             }
         }

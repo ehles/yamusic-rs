@@ -1,7 +1,7 @@
 //! Эквалайзер из «Настроек звука»: предусиление и 10 пиковых фильтров ±12 дБ.
 
 use rodio::source::SeekError;
-use rodio::Source;
+use rodio::{ChannelCount, SampleRate, Source};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -117,14 +117,14 @@ impl<S: Source<Item = f32>> Eq<S> {
         self.version = v;
         self.on = self.params.on.load(Ordering::Relaxed);
         self.preamp = f32::from_bits(self.params.preamp.load(Ordering::Relaxed));
-        let rate = self.inner.sample_rate().max(8000) as f32;
+        let rate = self.inner.sample_rate().get().max(8000) as f32;
         self.bands = (0..10)
             .filter_map(|i| {
                 let g = f32::from_bits(self.params.gains[i].load(Ordering::Relaxed));
                 (g.abs() > 0.01).then(|| (i, Biquad::peaking(FREQS[i], g, rate)))
             })
             .collect();
-        let channels = self.inner.channels().max(1) as usize;
+        let channels = self.inner.channels().get().max(1) as usize;
         if self.state.len() != channels {
             self.state = vec![[[0.0; 4]; 10]; channels];
         }
@@ -163,15 +163,15 @@ impl<S: Source<Item = f32>> Iterator for Eq<S> {
 }
 
 impl<S: Source<Item = f32>> Source for Eq<S> {
-    fn current_frame_len(&self) -> Option<usize> {
-        self.inner.current_frame_len()
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
     }
 
-    fn channels(&self) -> u16 {
+    fn channels(&self) -> ChannelCount {
         self.inner.channels()
     }
 
-    fn sample_rate(&self) -> u32 {
+    fn sample_rate(&self) -> SampleRate {
         self.inner.sample_rate()
     }
 

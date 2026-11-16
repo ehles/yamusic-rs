@@ -4,9 +4,12 @@
 use crate::api::{Account, Api, Batch, Res, Track, WAVE};
 use crate::config::log;
 use crate::eq::{Eq, EqParams};
-use rodio::{Decoder, OutputStream, Sink, Source as _};
+use crate::fade::{FadeState, SeekFade};
+use crate::stream::HttpStream;
+// rodio 0.22: Sink переименован в Player, OutputStream — в MixerDeviceSink.
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player as Sink};
 use std::collections::{HashSet, VecDeque};
-use std::io::Cursor;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -92,6 +95,10 @@ pub enum Cmd {
     PlayPause,
     /// Снять с паузы (если уже играет — ничего не делать).
     Resume,
+    /// Поставить на паузу (если уже на паузе — ничего не делать).
+    /// Нужен командам медиа-клавиш macOS (на других платформах не создаётся).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Pause,
     Next,
     Prev,
     Seek(f32),
@@ -113,8 +120,8 @@ enum Msg {
     Account(Res<Account>),
     Likes(Res<Vec<String>>),
     Batch { res: Res<Batch>, replace: bool, gen: u64 },
-    Audio { gen: u64, res: Res<Vec<u8>> },
-    Prefetch { id: String, res: Res<Vec<u8>> },
+    Audio { gen: u64, res: Res<HttpStream> },
+    Prefetch { id: String, res: Res<HttpStream> },
     Error(String),
 }
 
@@ -128,6 +135,8 @@ pub struct Player {
     shared: Arc<Mutex<Shared>>,
     likes: Likes,
     pub eq: Arc<EqParams>,
+    /// Цель последнего запроса перемотки: движок отбрасывает устаревшие запросы.
+    latest_seek: Arc<AtomicU32>,
 }
 
 impl Player {
@@ -136,15 +145,19 @@ impl Player {
         let shared = Arc::new(Mutex::new(Shared { volume: 0.6, ..Default::default() }));
         let likes: Likes = Default::default();
         let eq: Arc<EqParams> = Default::default();
-        let p = Player { tx: tx.clone(), shared: shared.clone(), likes: likes.clone(), eq: eq.clone() };
+        let latest_seek = Arc::new(AtomicU32::new(0));
+        let p = Player { tx: tx.clone(), shared: shared.clone(), likes: likes.clone(), eq: eq.clone(), latest_seek: latest_seek.clone() };
         thread::Builder::new()
             .name("audio".into())
-            .spawn(move || Engine::new(tx, shared, likes, notify, eq).run(rx))
+            .spawn(move || Engine::new(tx, shared, likes, notify, eq, latest_seek).run(rx))
             .expect("audio thread");
         p
     }
 
     pub fn send(&self, c: Cmd) {
+        if let Cmd::Seek(s) = c {
+            self.latest_seek.store(s.max(0.0).to_bits(), Ordering::Relaxed);
+        }
         let _ = self.tx.send(Msg::Cmd(c));
     }
 
@@ -156,11 +169,6 @@ impl Player {
         self.likes.lock().unwrap().contains(id)
     }
 
-}
-
-fn load_track(api: &Api, t: &Track) -> Res<Vec<u8>> {
-    let url = api.stream_url(&t.id)?;
-    api.fetch_bytes(&url)
 }
 
 /// Перемешивание без лишних зависимостей (xorshift от времени).
@@ -196,7 +204,14 @@ struct Engine {
     likes: Likes,
     notify: Notify,
     eq: Arc<EqParams>,
-    audio: Option<(OutputStream, Sink)>,
+    audio: Option<(MixerDeviceSink, Sink)>,
+    /// Состояние микро-фейда на стыке перемотки (общее с аудиопотоком).
+    fade: Arc<FadeState>,
+    /// Цель последнего запроса перемотки (общее с обёрткой Player).
+    latest_seek: Arc<AtomicU32>,
+    /// Цель перемотки, ещё не применённой к звуку: sync() держит её в UI,
+    /// чтобы ползунок не отскакивал к старой позиции и к целям очереди seek'ов.
+    seek_pending: Option<f32>,
     api: Option<Api>,
     uid: String,
     source: Source,
@@ -204,7 +219,8 @@ struct Engine {
     queue: VecDeque<Track>,
     history: Vec<Track>,
     current: Option<Track>,
-    current_bytes: Option<Arc<[u8]>>,
+    /// Адрес mp3 текущего трека — для повтора (Repeat::One) без повторного поиска ссылки.
+    current_url: Option<String>,
     batch_id: String,
     /// Сессия ротора текущей волны; radioStarted уходит в неё, когда она появится.
     session: String,
@@ -217,20 +233,22 @@ struct Engine {
     batch_gen: u64,
     retry_at: Option<Instant>,
     gen: u64,
+    /// Общее состояние текущего HttpStream: для предзагрузки куска при перемотке.
+    current_shared: Option<Arc<crate::stream::Shared>>,
     loaded: bool,
     paused: bool,
     volume: f32,
     repeat: Repeat,
     shuffle: bool,
     queue_ver: u64,
-    prefetch: Option<(String, Vec<u8>)>,
+    prefetch: Option<(String, HttpStream)>,
     prefetching: Option<String>,
     errors_in_row: u32,
     was_playing: bool,
 }
 
 impl Engine {
-    fn new(tx: Sender<Msg>, shared: Arc<Mutex<Shared>>, likes: Likes, notify: Notify, eq: Arc<EqParams>) -> Self {
+    fn new(tx: Sender<Msg>, shared: Arc<Mutex<Shared>>, likes: Likes, notify: Notify, eq: Arc<EqParams>, latest_seek: Arc<AtomicU32>) -> Self {
         // Фидбек и лайки — по порядку в отдельном потоке, чтобы не блокировать плеер.
         let (bg, bg_rx) = mpsc::channel::<Job>();
         thread::Builder::new()
@@ -256,7 +274,7 @@ impl Engine {
             queue: VecDeque::new(),
             history: Vec::new(),
             current: None,
-            current_bytes: None,
+            current_url: None,
             batch_id: String::new(),
             session: String::new(),
             radio_started_pending: false,
@@ -266,6 +284,10 @@ impl Engine {
             batch_gen: 0,
             retry_at: None,
             gen: 0,
+            current_shared: None,
+            fade: FadeState::new(),
+            latest_seek,
+            seek_pending: None,
             loaded: false,
             paused: true,
             volume: 0.6,
@@ -306,11 +328,12 @@ impl Engine {
 
     fn ensure_audio(&mut self) -> bool {
         if self.audio.is_none() {
-            match OutputStream::try_default() {
-                Ok((stream, handle)) => match Sink::try_new(&handle) {
-                    Ok(sink) => self.audio = Some((stream, sink)),
-                    Err(e) => log(format!("sink: {e}")),
-                },
+            match DeviceSinkBuilder::open_default_sink() {
+                Ok(mut stream) => {
+                    stream.log_on_drop(false);
+                    let sink = Sink::connect_new(stream.mixer());
+                    self.audio = Some((stream, sink));
+                }
                 Err(e) => log(format!("audio device: {e}")),
             }
         }
@@ -359,20 +382,27 @@ impl Engine {
     }
 
     /// Отложенные фидбеки, которые не ушли с запросом треков, отправляются отдельно.
-    fn flush_feedback(&mut self) {
+    /// `parallel` — отдельным потоком, а не очередью bg: при смене станции они не должны
+    /// задерживать запрос треков новой сессии (старой сессии они уже не влияют на подбор).
+    fn flush_feedback(&mut self, parallel: bool) {
         if self.deferred.is_empty() {
             return;
         }
         let list = std::mem::take(&mut self.deferred);
         let (Some(api), false) = (self.api.clone(), self.session.is_empty()) else { return };
         let session = self.session.clone();
-        let _ = self.bg.send(Box::new(move || {
+        let job = move || {
             for body in list {
                 if let Err(e) = api.session_feedback(&session, &body) {
                     log(format!("feedback: {e}"));
                 }
             }
-        }));
+        };
+        if parallel {
+            thread::spawn(job);
+        } else {
+            let _ = self.bg.send(Box::new(job));
+        }
     }
 
     fn stop_audio(&mut self) {
@@ -380,10 +410,11 @@ impl Engine {
             s.clear();
         }
         self.loaded = false;
+        self.seek_pending = None;
     }
 
     fn clear_queue(&mut self) {
-        self.flush_feedback();
+        self.flush_feedback(false);
         self.stale_batches = 0;
         self.queue.clear();
         self.queue_ver += 1;
@@ -402,7 +433,7 @@ impl Engine {
         self.clear_queue();
         self.history.clear();
         self.current = None;
-        self.current_bytes = None;
+        self.current_url = None;
         self.list = None;
         self.source = Source::Wave;
         let mut s = self.sh();
@@ -419,7 +450,10 @@ impl Engine {
     /// Состояние движка → Shared для UI.
     fn sync(&mut self) {
         let playing = self.loaded && !self.paused && self.sink().map(|s| !s.is_paused()).unwrap_or(false);
-        let pos = if self.loaded { self.pos() } else { 0.0 };
+        let pos = match self.seek_pending {
+            Some(p) => p,
+            None => if self.loaded { self.pos() } else { 0.0 },
+        };
         let mut s = self.shared.lock().unwrap();
         s.playing = playing;
         s.position = pos;
@@ -462,13 +496,26 @@ impl Engine {
     }
 
     fn replay(&mut self) -> bool {
-        let Some(bytes) = self.current_bytes.clone() else { return false };
-        let Ok(src) = Decoder::new(Cursor::new(bytes)) else { return false };
-        let src = Eq::new(src.convert_samples::<f32>(), self.eq.clone());
-        if let Some(sink) = self.sink() {
-            sink.append(src);
-            sink.play();
+        // Повтор открываем в фоне по уже известному адресу: не блокируем аудиодвижок
+        // сетью, как при обычной загрузке (результат придёт сообщением Msg::Audio).
+        let (Some(api), Some(url)) = (self.api.clone(), self.current_url.clone()) else { return false };
+        if self.current.is_none() {
+            return false;
         }
+        self.gen += 1;
+        self.loaded = false;
+        self.seek_pending = None;
+        {
+            let mut s = self.sh();
+            s.position = 0.0;
+            s.loading = true;
+        }
+        let gen = self.gen;
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let res = api.reopen_stream(&url);
+            let _ = tx.send(Msg::Audio { gen, res });
+        });
         true
     }
 
@@ -579,6 +626,12 @@ impl Engine {
                     s.play();
                 }
             }
+            Cmd::Pause => {
+                self.paused = true;
+                if let Some(s) = self.sink() {
+                    s.pause();
+                }
+            }
             Cmd::PlayPause => {
                 self.paused = !self.paused;
                 if let Some(s) = self.sink() {
@@ -597,13 +650,57 @@ impl Engine {
             }
             Cmd::Prev => self.prev(),
             Cmd::Seek(sec) => {
-                if self.loaded {
-                    if let Some(s) = self.sink() {
-                        if let Err(e) = s.try_seek(Duration::from_secs_f32(sec.max(0.0))) {
-                            log(format!("seek: {e:?}"));
+                // rodio применяет seek в аудиоколбэке. Coarse seek (rodio 0.22)
+                // читает лишь пару кадров около цели, но и они не должны ходить
+                // в сеть — поэтому кусок докачиваем здесь, в движке. Если он уже
+                // в памяти — перемотка мгновенная.
+                if !self.loaded {
+                    return;
+                }
+                let pos = sec.max(0.0);
+                // UI показывает цель сразу и держит её в sync(), пока seek не
+                // применён: иначе ползунок отскакивает к старой позиции, а при
+                // частых кликах — к целям очереди перемоток.
+                self.seek_pending = Some(pos);
+                self.sh().position = pos;
+                (self.notify)();
+                // В очереди уже более новая перемотка — не дёргаем звук к устаревшей цели.
+                if self.latest_seek.load(Ordering::Relaxed) != pos.to_bits() {
+                    return;
+                }
+                if let Some(shared) = self.current_shared.clone() {
+                    let dur = self.sh().duration;
+                    let len = shared.len;
+                    if dur > 0.0 && len > 0 {
+                        let byte = (len as f64 * (pos as f64 / dur as f64)) as u64;
+                        if let Err(e) = shared.prime(byte) {
+                            log(format!("seek: кусок не скачался: {e}"));
                         }
                     }
                 }
+                // Щелчок от разрыва волны гасим микро-фейдом: затухание, seek
+                // при нулевом усилении, нарастание (SeekFade в try_seek).
+                let fade = self.fade.clone();
+                let can_fade = !self.paused && self.sink().map(|s| !s.empty()).unwrap_or(false);
+                if can_fade {
+                    fade.start_out();
+                    for _ in 0..60 {
+                        if fade.is_held() {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                if let Some(s) = self.sink() {
+                    if let Err(e) = s.try_seek(Duration::from_secs_f32(pos)) {
+                        log(format!("seek: {e:?}"));
+                    }
+                }
+                // Seek мог не примениться (пустой sink) — не оставляем тишину.
+                if fade.is_held() {
+                    fade.reset();
+                }
+                self.seek_pending = None;
             }
             Cmd::Volume(v) => {
                 self.volume = v.clamp(0.0, 1.0);
@@ -653,7 +750,6 @@ impl Engine {
                     return;
                 }
                 let skipped: Vec<Track> = self.queue.drain(..i).collect();
-                self.queue_ver += 1;
                 if let Some(cur) = self.current.take() {
                     self.history.push(cur);
                 }
@@ -666,7 +762,6 @@ impl Engine {
             Cmd::Enqueue { track, next } => {
                 if next {
                     self.queue.push_front(track);
-                    self.queue_ver += 1;
                     self.prefetch = None;
                     if self.loaded {
                         self.prefetch_next();
@@ -718,9 +813,26 @@ impl Engine {
     // ---------- очередь ----------
 
     fn start_wave(&mut self, src: Source, fetch: bool) {
+        // Смена станции реагирует сразу, как оригинал: старый трек замолкает, UI
+        // показывает новую станцию и загрузку, не дожидаясь ответа сервера.
+        if let Some(cur) = self.current.take() {
+            if self.loaded {
+                self.feedback("skip", Some(cur.full_id()), Some(self.pos() as f64));
+            }
+            self.history.push(cur);
+            self.trim_history();
+        }
+        self.stop_audio();
+        // Фидбеки старой сессии — параллельно, чтобы не задерживать запрос новых треков.
+        self.flush_feedback(true);
         self.clear_queue();
         self.list = None;
         self.set_source(src);
+        {
+            let mut s = self.sh();
+            s.track = None;
+            s.loading = true;
+        }
         self.feedback("radioStarted", None, None);
         if fetch {
             self.fetch_batch_with(true);
@@ -754,11 +866,17 @@ impl Engine {
         let feedbacks = std::mem::take(&mut self.deferred);
         let tx = self.tx.clone();
         let gen = self.batch_gen;
-        // В очереди фонового потока: запрос уйдёт после уже отправленных фидбеков.
-        let _ = self.bg.send(Box::new(move || {
+        let job = move || {
             let res = api.wave_session(&station, Some(&session), &queue, &feedbacks);
             let _ = tx.send(Msg::Batch { res, replace, gen });
-        }));
+        };
+        if replace {
+            // Смена станции: запрос уходит сразу, не дожидаясь очереди фидбеков.
+            thread::spawn(job);
+        } else {
+            // В очереди фонового потока: запрос уйдёт после уже отправленных фидбеков.
+            let _ = self.bg.send(Box::new(job));
+        }
     }
 
     fn on_batch(&mut self, b: Batch, replace: bool) {
@@ -781,12 +899,7 @@ impl Engine {
         // из повторов, просим ещё (до двух раз подряд), а потом берём как есть, чтобы не замолчать.
         let check_history = !replace || self.source == Source::Wave;
         let skip = |t: &Track| queued(t) || (check_history && self.history.iter().any(|h| h.id == t.id));
-        let fresh: Vec<Track> = b
-            .tracks
-            .iter()
-            .filter(|t| !skip(t))
-            .cloned()
-            .collect();
+        let fresh: Vec<Track> = b.tracks.iter().filter(|t| !skip(t)).cloned().collect();
         let tracks = if !fresh.is_empty() || b.tracks.iter().all(&queued) {
             fresh
         } else if self.stale_batches < 2 {
@@ -831,7 +944,7 @@ impl Engine {
         }
         self.stop_audio();
         self.play_from_queue();
-        self.flush_feedback();
+        self.flush_feedback(false);
     }
 
     /// Список закончился: по кругу (исполнитель) или волна по нему (плейлист, альбом).
@@ -850,7 +963,7 @@ impl Engine {
                 self.list = Some(l);
             }
             After::Wave(src) => {
-                self.flush_feedback();
+                self.flush_feedback(false);
                 self.set_source(src);
                 self.session.clear();
                 self.feedback("radioStarted", None, None);
@@ -863,7 +976,6 @@ impl Engine {
             match (&self.list, self.repeat) {
                 (Some(l), Repeat::All) => {
                     self.queue.extend(l.all.iter().cloned());
-                    self.queue_ver += 1;
                 }
                 _ => self.list_finished(),
             }
@@ -875,13 +987,14 @@ impl Engine {
             }
             None => {
                 self.current = None;
-                self.current_bytes = None;
+                self.current_url = None;
                 self.gen += 1;
                 let mut s = self.sh();
                 s.track = None;
                 s.loading = true;
             }
         }
+        self.queue_ver += 1;
         if self.queue.len() < 2 {
             self.fetch_batch();
         }
@@ -914,7 +1027,8 @@ impl Engine {
     fn start_current(&mut self) {
         self.gen += 1;
         self.loaded = false;
-        self.current_bytes = None;
+        self.current_url = None;
+        self.seek_pending = None;
         let Some(t) = self.current.clone() else { return };
         {
             let mut s = self.sh();
@@ -939,13 +1053,13 @@ impl Engine {
         let gen = self.gen;
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let res = load_track(&api, &t);
+            let res = api.open_track_stream(&t);
             let _ = tx.send(Msg::Audio { gen, res });
         });
     }
 
     fn prefetch_next(&mut self) {
-        // Следующий трек качаем под конец текущего: не держать в памяти два файла всё время.
+        // Следующий трек открываем под конец текущего: в памяти только первый кусок.
         let near_end = {
             let s = self.shared.lock().unwrap();
             s.duration > 0.0 && s.duration - s.position <= 45.0
@@ -962,27 +1076,34 @@ impl Engine {
         self.prefetching = Some(next.id.clone());
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let res = load_track(&api, &next);
+            let res = api.open_track_stream(&next);
             let _ = tx.send(Msg::Prefetch { id: next.id, res });
         });
     }
 
-    fn play_loaded(&mut self, bytes: Vec<u8>) {
+    fn play_loaded(&mut self, stream: HttpStream) {
         let Some(t) = self.current.clone() else { return };
         if !self.ensure_audio() {
             self.error("Не найдено аудиоустройство");
             self.sh().loading = false;
             return;
         }
-        let bytes: Arc<[u8]> = bytes.into();
-        let src = match Decoder::new(Cursor::new(bytes.clone())) {
+        let url = stream.url().to_string();
+        let shared = stream.shared();
+        let len = shared.len;
+        // Coarse seek: прыжок к цели вместо покадрового скана всего промежутка
+        // (Accurate в rodio 0.20 качал его прямо в аудиоколбэке — щелчки и секунды
+        // ожидания). byte_len нужен и для точной длительности MP3.
+        let src = match Decoder::builder().with_data(stream).with_byte_len(len).with_coarse_seek(true).build() {
             Ok(s) => s,
             Err(e) => {
                 self.on_load_error(format!("не удалось декодировать: {e}"));
                 return;
             }
         };
-        let src = Eq::new(src.convert_samples::<f32>(), self.eq.clone());
+        self.fade.reset();
+        self.seek_pending = None;
+        let src = SeekFade::new(Eq::new(src, self.eq.clone()), self.fade.clone());
         let vol = self.volume * self.volume;
         let paused = self.paused;
         if let Some(sink) = self.sink() {
@@ -995,7 +1116,8 @@ impl Engine {
                 sink.play()
             }
         }
-        self.current_bytes = Some(bytes);
+        self.current_url = Some(url);
+        self.current_shared = Some(shared);
         self.loaded = true;
         self.errors_in_row = 0;
         self.sh().loading = false;
@@ -1020,17 +1142,62 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rodio::Source as _;
 
-    /// Сетевой тест: ссылка на поток → скачивание → декодирование (без токена — 30-сек превью).
+    /// Сетевой тест: ссылка на поток → потоковое чтение → декодирование (без токена — 30-сек превью).
     #[test]
     #[ignore]
     fn stream_and_decode() {
         let api = Api::new("");
         let url = api.stream_url("57703").expect("stream url");
-        let bytes = api.fetch_bytes(&url).expect("download");
-        assert!(bytes.len() > 50_000);
-        let dec = Decoder::new(Cursor::new(bytes)).expect("decode");
+        let stream = api.reopen_stream(&url).expect("open stream");
+        let len = stream.shared().len;
+        let dec = Decoder::builder().with_data(stream).with_byte_len(len).build().expect("decode");
         let samples = dec.take(44100).count();
         assert!(samples > 1000);
+    }
+
+    /// Регрессия на корневую причину щелчков и тормозов при перемотке:
+    /// rodio 0.20 использовал SeekMode::Accurate, и symphonia парсила каждый
+    /// MP3-кадр от текущей позиции до цели, качая все куски промежутка прямо
+    /// в аудиоколбэке. Coarse seek прыгает сразу к цели — после предзагрузки
+    /// целевого куска перемотка не должна делать ни одного сетевого запроса.
+    #[test]
+    fn coarse_seek_does_not_stream_the_gap() {
+        use std::sync::atomic::Ordering;
+        // 4000 тихих MPEG1-кадров (~105 с, 1.6 МБ) — несколько кусков HttpStream.
+        // Заголовок FF FB 90 C0: MPEG1 Layer3, 128 кбит/с, 44.1 кГц, моно;
+        // нулевые side info и main data декодируются в тишину.
+        let mut data = Vec::new();
+        for _ in 0..4000 {
+            let mut frame = vec![0u8; 417];
+            frame[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0xC0]);
+            data.extend_from_slice(&frame);
+        }
+        let (url, hits) = crate::stream::tests::serve(data);
+        let stream = HttpStream::open(reqwest::blocking::Client::new(), url).expect("open");
+        let shared = stream.shared();
+        let len = shared.len;
+        let mut dec = Decoder::builder().with_data(stream).with_byte_len(len).with_coarse_seek(true).build().expect("decoder");
+        let dur = dec.total_duration().expect("duration").as_secs_f32();
+        assert!(dur > 100.0, "синтетический mp3 не распознан: {dur}");
+        let _ = dec.by_ref().take(4410).count(); // 0.1 с с начала
+        let before = hits.load(Ordering::SeqCst);
+
+        // Перемотка вперёд, в самый конец: целевой кусок докачан заранее,
+        // как это делает движок в Cmd::Seek. Сам seek — ни одного запроса.
+        let target = dur * 0.9;
+        shared.prime((len as f64 * target as f64 / dur as f64) as u64).expect("prime");
+        dec.try_seek(Duration::from_secs_f32(target)).expect("seek");
+        let played = dec.by_ref().take(44100).count();
+        assert!(played > 40000, "после seek звук не пошёл");
+        assert_eq!(hits.load(Ordering::SeqCst), before + 1, "seek скачал промежуток (Accurate-скан?)");
+
+        // Обратная перемотка — тоже без скачивания промежутка.
+        let back = dur * 0.2;
+        shared.prime((len as f64 * back as f64 / dur as f64) as u64).expect("prime");
+        dec.try_seek(Duration::from_secs_f32(back)).expect("seek back");
+        let _ = dec.by_ref().take(4410).count();
+        assert_eq!(hits.load(Ordering::SeqCst), before + 2, "обратный seek скачал промежуток");
     }
 }

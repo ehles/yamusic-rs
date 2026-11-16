@@ -170,7 +170,9 @@ export global App {
     in property <color> accent: #3d5c8f;
     in property <bool> playing;
     in property <bool> loading;
-    in property <float> position;
+    // in-out: UI оптимистично ставит цель перемотки в кадр отпускания ползунка,
+    // движок подтверждает её через set_position.
+    in-out property <float> position;
     in property <float> duration;
     in property <bool> liked;
     in property <int> repeat;

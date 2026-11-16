@@ -1548,6 +1548,17 @@ let mp3 = || arr.iter().filter(|x| x.get("codec").and_then(|c| c.as_str()) == So
         }
         resp.bytes().map(|b| b.to_vec()).map_err(|e| format!("сеть: {}", crate::config::chain(&e)))
     }
+
+    /// Открыть поток трека: ссылка на mp3 + первый кусок (дальше докачка при чтении).
+    pub fn open_track_stream(&self, t: &Track) -> Res<crate::stream::HttpStream> {
+        let url = self.stream_url(&t.id)?;
+        crate::stream::HttpStream::open(self.http.clone(), url)
+    }
+
+    /// Переоткрыть уже известный адрес mp3 (для повтора трека без повторного поиска ссылки).
+    pub fn reopen_stream(&self, url: &str) -> Res<crate::stream::HttpStream> {
+        crate::stream::HttpStream::open(self.http.clone(), url.to_string())
+    }
 }
 
 #[cfg(test)]

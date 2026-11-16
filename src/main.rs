@@ -10,6 +10,7 @@ mod client;
 mod config;
 mod discord;
 mod eq;
+mod fade;
 mod gui;
 mod i18n;
 mod images;
@@ -20,6 +21,7 @@ mod net;
 mod palette;
 mod player;
 mod secret;
+mod stream;
 #[cfg_attr(windows, path = "sys/windows.rs")]
 #[cfg_attr(target_os = "macos", path = "sys/macos.rs")]
 #[cfg_attr(target_os = "linux", path = "sys/linux.rs")]

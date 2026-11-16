@@ -15,6 +15,10 @@ pub enum Event {
     #[allow(dead_code)]
     Show,
     PlayPause,
+    /// Отдельные команды медиа-клавиш macOS: pause должна только ставить на паузу,
+    /// play — только снимать, без переключения (кнопка наушников, Пункт управления).
+    Pause,
+    Resume,
     Prev,
     Next,
     Updates,
@@ -189,6 +193,8 @@ fn install_media_keys() -> Vec<MediaTarget> {
     let map = unsafe {
         [
             (center.togglePlayPauseCommand(), Event::PlayPause),
+            (center.pauseCommand(), Event::Pause),
+            (center.playCommand(), Event::Resume),
             (center.nextTrackCommand(), Event::Next),
             (center.previousTrackCommand(), Event::Prev),
         ]
