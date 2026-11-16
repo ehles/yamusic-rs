@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.92"
 license = "GPL-3.0-only"
 description = "Яндекс Музыка RS — неофициальный клиент Яндекс Музыки на Rust"
-repository = "https://github.com/SpolzerMod/yamusic-rs"
+repository = "https://github.com/ehles/yamusic-rs"
 
 [dependencies]
 skia-safe = { version = "0.153.3", default-features = false }
@@ -52,12 +52,25 @@ futures-lite = "2"
 # Токен в связке ключей (GNOME Keyring, KWallet) через тот же zbus.
 secret-service = { version = "5.2", default-features = false, features = ["rt-async-io-crypto-rust"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Токен в Связке ключей (Keychain через Security.framework).
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
+# Значок в меню-баре (NSStatusItem). objc2 — orderOut/makeKeyAndOrderFront окна,
+# objc2-media-player — медиаклавиши через MPRemoteCommandCenter.
+tray-icon = "0.21"
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSGeometry"] }
+objc2-media-player = { version = "0.3", features = ["MPRemoteCommand"] }
+
 [build-dependencies]
 slint-build = "1.18"
 
 [profile.release]
 opt-level = 3
-lto = true
+# thin, а не true: fat-LTO не переваривает objc2-классы muda из tray-icon
+# (дубль символа __CLASS_MudaMenuDelegate в биткоде).
+lto = "thin"
 codegen-units = 1
 strip = true
 panic = "abort"

@@ -21,10 +21,13 @@ mod palette;
 mod player;
 mod secret;
 #[cfg_attr(windows, path = "sys/windows.rs")]
+#[cfg_attr(target_os = "macos", path = "sys/macos.rs")]
 #[cfg_attr(target_os = "linux", path = "sys/linux.rs")]
 mod sys;
 mod tags;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
+#[cfg_attr(windows, path = "tray.rs")]
+#[cfg_attr(target_os = "macos", path = "tray_macos.rs")]
 mod tray;
 mod update;
 mod yandex_id;

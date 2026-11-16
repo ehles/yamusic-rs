@@ -1096,7 +1096,7 @@ const SUPPORT_CHAT: &str =
     "https://yandex.ru/chat?context=%7B%22entrypoint%22%3A%22web_desktop%22%7D#/user/ee219503-b69b-9484-405b-6877a510e13c";
 
 fn quit() {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     crate::tray::remove();
     let _ = slint::quit_event_loop();
 }
@@ -1724,8 +1724,8 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
         }
     });
     // Как у оригинала на Windows: пока играет трек, окно прячется в трей, иначе приложение закрывается.
-    // На Linux трея пока нет, там закрытие всегда выход.
-    #[cfg(windows)]
+    // На macOS трей через меню-бар, на Linux трея пока нет, там закрытие всегда выход.
+    #[cfg(any(windows, target_os = "macos"))]
     {
         let weak = ui.as_weak();
         let p = player.clone();
@@ -1743,7 +1743,14 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
         });
         install_tray(&ui, &player);
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let weak = ui.as_weak();
+        sys::on_wake(move || {
+            let _ = weak.upgrade_in_event_loop(|ui| reveal(&ui));
+        });
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         app.on_close(quit);
         let weak = ui.as_weak();
@@ -1783,11 +1790,12 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
         })
     });
 
-    // «Как в системе» следит за темой Windows и на ходу. На Linux её отдаёт портал через
-    // gdbus, запускать его каждые пару секунд не стоит.
-    #[cfg(windows)]
+    // «Как в системе» следит за темой ОС на ходу (Windows — реестр, macOS — defaults,
+    // это дёшево). На Linux её отдаёт портал через gdbus, запускать его каждые
+    // пару секунд не стоит.
+    #[cfg(any(windows, target_os = "macos"))]
     let theme_tick = Timer::default();
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     theme_tick.start(TimerMode::Repeated, Duration::from_secs(2), || {
         with_ctx(|c| {
             if c.st.borrow().cfg.theme != "system" {
@@ -1851,7 +1859,7 @@ fn install_mpris(ui: &AppWindow, player: &Player) {
     });
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn install_tray(ui: &AppWindow, player: &Player) {
     let weak = ui.as_weak();
     let p = player.clone();

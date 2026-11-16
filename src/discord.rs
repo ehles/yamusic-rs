@@ -43,10 +43,13 @@ fn open_pipe(i: u32) -> Option<Pipe> {
     std::fs::OpenOptions::new().read(true).write(true).open(format!(r"\\.\pipe\discord-ipc-{i}")).ok()
 }
 
-/// Сокет лежит в XDG_RUNTIME_DIR, у Flatpak и Snap — в своих подпапках.
+/// Сокет лежит в XDG_RUNTIME_DIR, у Flatpak и Snap — в своих подпапках,
+/// у Discord под macOS — в папке Application Support.
 #[cfg(unix)]
 fn open_pipe(i: u32) -> Option<Pipe> {
     let dirs = ["XDG_RUNTIME_DIR", "TMPDIR"].into_iter().filter_map(std::env::var_os).map(std::path::PathBuf::from);
+    #[cfg(target_os = "macos")]
+    let dirs = dirs.chain(std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Application Support/discord")));
     dirs.chain([std::path::PathBuf::from("/tmp")])
         .flat_map(|d| ["", "app/com.discordapp.Discord", "snap.discord"].map(|sub| d.join(sub).join(format!("discord-ipc-{i}"))))
         .find_map(|p| Pipe::connect(p).ok())

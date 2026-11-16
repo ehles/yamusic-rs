@@ -1,6 +1,6 @@
 //! Где хранить токен. Windows: шифрование DPAPI, расшифровать может только та же учётная
-//! запись на том же компьютере, в config.json лежит base64 шифротекста. Linux: связка ключей
-//! пользователя через Secret Service, в config.json только имя записи.
+//! запись на том же компьютере, в config.json лежит base64 шифротекста. Linux и macOS:
+//! связка ключей пользователя (Secret Service и Keychain), в config.json только имя записи.
 
 #[cfg(windows)]
 use base64::Engine as _;
@@ -135,19 +135,45 @@ mod keyring {
     }
 }
 
+/// Связка ключей macOS (Keychain через крейт keyring). Секрет лежит там,
+/// в config.json остаётся только имя записи.
+#[cfg(target_os = "macos")]
+mod keyring {
+    const SERVICE: &str = "yamusic-rs";
+
+    fn entry(name: &str) -> Option<keyring::Entry> {
+        keyring::Entry::new(SERVICE, name).ok()
+    }
+
+    pub fn store(name: &str, secret: &str) -> bool {
+        entry(name).is_some_and(|e| e.set_password(secret).is_ok())
+    }
+
+    pub fn load(name: &str) -> Option<String> {
+        let password = entry(name)?.get_password().ok()?;
+        (!password.is_empty()).then_some(password)
+    }
+
+    pub fn remove(name: &str) {
+        if let Some(e) = entry(name) {
+            let _ = e.delete_credential();
+        }
+    }
+}
+
 /// Префикс в config.json: секрет лежит в связке ключей, а не рядом.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const IN_KEYRING: &str = "keyring:";
 
-/// Спрятать секрет для хранения в конфиге. `name` различает секреты в связке ключей Linux,
-/// DPAPI на Windows он не нужен. None — спрятать негде.
+/// Спрятать секрет для хранения в конфиге. `name` различает секреты в связке ключей
+/// (Linux, macOS), DPAPI на Windows он не нужен. None — спрятать негде.
 pub fn seal(name: &str, plain: &str) -> Option<String> {
     #[cfg(windows)]
     {
         let _ = name;
         dpapi::protect(plain.as_bytes()).map(|b| base64::engine::general_purpose::STANDARD.encode(b))
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         keyring::store(name, plain).then(|| format!("{IN_KEYRING}{name}"))
     }
@@ -160,7 +186,7 @@ pub fn open(sealed: &str) -> Option<String> {
         let raw = base64::engine::general_purpose::STANDARD.decode(sealed.trim()).ok()?;
         String::from_utf8(dpapi::unprotect(&raw)?).ok()
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         keyring::load(sealed.trim().strip_prefix(IN_KEYRING)?)
     }
@@ -168,7 +194,7 @@ pub fn open(sealed: &str) -> Option<String> {
 
 /// Секрет больше не нужен (вышли из аккаунта). DPAPI ничего не хранит, связку ключей чистим.
 pub fn forget(name: &str) {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     keyring::remove(name);
     #[cfg(windows)]
     let _ = name;
