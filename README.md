@@ -6,12 +6,13 @@
 
 **Интерфейс официального приложения Яндекс Музыки на Rust: один файл и в 13 раз меньше памяти.**
 
-[![Релиз](https://img.shields.io/github/v/release/SpolzerMod/yamusic-rs?label=%D1%80%D0%B5%D0%BB%D0%B8%D0%B7&color=ffd60a&labelColor=1c1c1f)](https://github.com/SpolzerMod/yamusic-rs/releases/latest)
+[![Релиз](https://img.shields.io/github/v/release/ehles/yamusic-rs?label=%D1%80%D0%B5%D0%BB%D0%B8%D0%B7&color=ffd60a&labelColor=1c1c1f)](https://github.com/ehles/yamusic-rs/releases/latest)
 ![Windows 10 | 11](https://img.shields.io/badge/Windows-10%20%7C%2011-2b2b30?labelColor=1c1c1f)
 ![Linux бета](https://img.shields.io/badge/Linux-%D0%B1%D0%B5%D1%82%D0%B0-2b2b30?labelColor=1c1c1f)
+![macOS бета](https://img.shields.io/badge/macOS-%D0%B1%D0%B5%D1%82%D0%B0-2b2b30?labelColor=1c1c1f)
 [![GPL-3.0](https://img.shields.io/badge/%D0%BB%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-GPL--3.0-2b2b30?labelColor=1c1c1f)](LICENSE)
 
-[Скачать](https://github.com/SpolzerMod/yamusic-rs/releases/latest) ·
+[Скачать](https://github.com/ehles/yamusic-rs/releases/latest) ·
 [Возможности](#возможности) ·
 [Замеры](#замеры) ·
 [Какие системы](#какие-системы-поддерживаются) ·
@@ -92,7 +93,9 @@
 
 ### Windows
 
-1. Скачайте `yamusic-rs.exe` со страницы [последнего релиза](https://github.com/SpolzerMod/yamusic-rs/releases/latest).
+1. Скачайте `yamusic-rs_<версия>_windows_x86_64.zip` со страницы
+   [последнего релиза](https://github.com/ehles/yamusic-rs/releases/latest) и распакуйте —
+   внутри `yamusic-rs.exe`.
 2. Положите файл в любую папку, например в `Документы` или `C:\Programs`, и запустите.
    Установщика нет, приложение целиком помещается в один exe.
 3. Приложение покажет код. Откройте [ya.ru/device](https://ya.ru/device) на компьютере или телефоне
@@ -283,7 +286,7 @@ API Яндекса неофициальный и может меняться б�
 
 Если после обновления приложение перестало запускаться, это тоже срочно, но писать можно
 в обычный issue, в заголовке укажите версию. Пока ждёте исправления, предыдущую версию можно
-скачать со страницы [релизов](https://github.com/SpolzerMod/yamusic-rs/releases).
+скачать со страницы [релизов](https://github.com/ehles/yamusic-rs/releases).
 
 ### Прислать код
 
@@ -302,7 +305,7 @@ API Яндекса неофициальный и может меняться б�
 Нужен Rust 1.92 или новее (`rustup update stable`). Дальше на любой системе одинаково:
 
 ```bash
-git clone https://github.com/SpolzerMod/yamusic-rs
+git clone https://github.com/ehles/yamusic-rs
 cd yamusic-rs
 cargo build --release
 ```
@@ -438,9 +441,10 @@ of Electron it is a single 26 MB executable that renders its window on the CPU w
 Running the same scenario, the official app uses about 850 MB of RAM across 7 processes, and RS
 uses about 65 MB in one process.
 
-- **Windows:** download `yamusic-rs.exe` from the [latest release](https://github.com/SpolzerMod/yamusic-rs/releases/latest)
-  and run it; there is no installer. Sign in with the code shown at [ya.ru/device](https://ya.ru/device).
-  The app updates itself from GitHub releases.
+- **Windows:** download `yamusic-rs_<version>_windows_x86_64.zip` from the
+  [latest release](https://github.com/ehles/yamusic-rs/releases/latest) and unpack it — there is
+  a single `yamusic-rs.exe` inside, no installer. Sign in with the code shown at
+  [ya.ru/device](https://ya.ru/device). The app updates itself from GitHub releases.
 - **Linux (beta):** the release has a `.deb` (Debian, Ubuntu, Mint), an `.rpm` (Fedora, openSUSE)
   and an AppImage for everything else; a [`PKGBUILD`](packaging/aur/PKGBUILD) is available for Arch.
   Needs glibc 2.35 or newer. Sound goes through PipeWire, PulseAudio or ALSA, media keys and
