@@ -298,25 +298,23 @@ fn old_artifact() -> Option<PathBuf> {
 
 /// Убрать файлы прошлой версии, оставшиеся после обновления. Старый процесс может ещё
 /// завершаться и держать их, поэтому пробуем несколько раз в фоне.
+#[cfg(any(windows, target_os = "macos"))]
 pub fn cleanup() {
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        return;
-    }
-    #[cfg(any(windows, target_os = "macos"))]
-    {
-        let Some(old) = old_artifact().filter(|p| p.exists()) else { return };
-        std::thread::spawn(move || {
-            for _ in 0..10 {
-                let gone = if old.is_dir() { std::fs::remove_dir_all(&old) } else { std::fs::remove_file(&old) };
-                if gone.is_ok() || !old.exists() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_secs(2));
+    let Some(old) = old_artifact().filter(|p| p.exists()) else { return };
+    std::thread::spawn(move || {
+        for _ in 0..10 {
+            let gone = if old.is_dir() { std::fs::remove_dir_all(&old) } else { std::fs::remove_file(&old) };
+            if gone.is_ok() || !old.exists() {
+                return;
             }
-        });
-    }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
 }
+
+/// На Linux файл обновления не создаётся — убирать нечего.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn cleanup() {}
 
 #[cfg(test)]
 mod tests {
