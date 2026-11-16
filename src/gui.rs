@@ -770,9 +770,13 @@ impl Ctx {
             liked: self.player.is_liked(&t.id),
             explicit: t.explicit,
             available: true,
-            artist_names: ModelRc::from(Rc::new(VecModel::from(
-                t.artist_list.iter().map(|a| SharedString::from(a.name.as_str())).collect::<Vec<_>>(),
-            ))),
+            artist_names: if t.artist_list.is_empty() {
+                ModelRc::default()
+            } else {
+                ModelRc::from(Rc::new(VecModel::from(
+                    t.artist_list.iter().map(|a| SharedString::from(a.name.as_str())).collect::<Vec<_>>(),
+                )))
+            },
         }
     }
 
@@ -1396,6 +1400,8 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
     if let Some(sprite) = &assets {
         set_icons(&ui, sprite);
     }
+    // Спрайт (вся SVG-строка) нужен только для нарезки иконок — дальше не держим его в памяти.
+    drop(assets);
     load_id_icons(&ui);
     start_updates(&ui);
 

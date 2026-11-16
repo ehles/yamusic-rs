@@ -211,13 +211,12 @@ pub fn woff_to_sfnt(w: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+// Light (300) и Heavy (800) в UI не используются: веса 400/500/700/900.
 const FONTS: &[&str] = &[
     "YSText-Regular",
     "YSText-Medium",
     "YSText-Bold",
-    "YSText-Heavy",
     "YSText-Black",
-    "YSText-Light",
     "YSMusic-HeadlineBold",
 ];
 

@@ -45,12 +45,11 @@ export component SearchPage inherits Rectangle {
                 if App.search-chart.length > 0: Rectangle {
                     height: 44px + 4 * 56px + 40px;
                     BlockHeader { x: 0; y: 0; text: T.t("Чарт"); clicked => { App.open-card("chart", 0); } }
-                    for r[i] in App.search-chart: ChartLine {
+                    for i in min(8, App.search-chart.length): ChartLine {
                         x: floor(i / 4) * (col-w + 24px);
                         y: 44px + mod(i, 4) * 56px;
                         width: col-w;
-                        visible: i < 8;
-                        line: r;
+                        line: App.search-chart[i];
                         index: i;
                         play => { App.play-chart(i); }
                         like => { App.like-chart(i); }
@@ -92,12 +91,11 @@ export component SearchPage inherits Rectangle {
                 if App.sr-tracks.length > 0: Rectangle {
                     height: 44px + min(4, ceil(App.sr-tracks.length / 2)) * 56px + 40px;
                     BlockHeader { x: 0; y: 0; text: T.t("Треки"); }
-                    for t[i] in App.sr-tracks: TrackRow {
+                    for i in min(8, App.sr-tracks.length): TrackRow {
                         x: floor(i / 4) * (col-w + 24px);
                         y: 44px + mod(i, 4) * 56px;
                         width: col-w;
-                        visible: i < 8;
-                        item: t;
+                        item: App.sr-tracks[i];
                         block: "results";
                         index: i;
                         play => { App.play-result(i); }
